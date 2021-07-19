@@ -369,9 +369,9 @@ class RedisChannelLayer(BaseChannelLayer):
         # of the main message queue in the proper order; BRPOP must *not* be called
         # because that would deadlock the server
         cleanup_script = """
-            local backed_up = redis.call('ZRANGE', ARGV[2], 0, -1, 'WITHSCORES')
-            for i = #backed_up, 1, -2 do
-                redis.call('ZADD', ARGV[1], backed_up[i], backed_up[i - 1])
+            local backed_up = redis.call('LRANGE', ARGV[2], 0, -1)
+            for i = #backed_up, 1, -1 do
+                redis.call('LPUSH', ARGV[1], backed_up[i])
             end
             redis.call('DEL', ARGV[2])
         """
@@ -381,15 +381,7 @@ class RedisChannelLayer(BaseChannelLayer):
             # and the script executes atomically...
             await connection.eval(cleanup_script, keys=[], args=[channel, backup_queue])
             # ...and it doesn't matter here either, the message will be safe in the backup.
-            result = await connection.bzpopmin(channel, timeout=timeout)
-
-            if result is not None:
-                _, member, timestamp = result
-                await connection.zadd(backup_queue, float(timestamp), member)
-            else:
-                member = None
-
-            return member
+            return await connection.brpoplpush(channel, backup_queue, timeout=timeout)
 
     async def _clean_receive_backup(self, index, channel):
         """
